@@ -481,7 +481,7 @@ function extractWithReadability() {
     const reader = new Readability(clone);
     const article = reader.parse();
 
-    const contentElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6');
+    const contentElements = document.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td, th, span, div, a, blockquote, pre, code');
     const options = {
         root: null,
         rootMargin: '0px 0px 200px 0px',
@@ -493,12 +493,46 @@ function extractWithReadability() {
             if (entry.isIntersecting) {
                 console.log('Viewing content:', entry.target.textContent);
                 const e = entry.target as HTMLElement;
-                viewedContent.push(`${e.tagName}: ${e.textContent}` || '');
+
+                const exists = viewedContent.some(existing => existing == `${e.tagName}: ${e.innerText}`);
+
+                if (!exists) {
+                    viewedContent.push(`${e.tagName}: ${e.innerText}` || '');
+                    console.log(`${e.innerText} already exists!`);
+                }
+                observer.unobserve(entry.target)
             };
         });
     };
     const observer = new IntersectionObserver(observerCallback, options);
-    contentElements.forEach(el => observer.observe(el));
+    contentElements.forEach(el => { 
+        const htmlEl = el as HTMLElement;
+        const textLength = htmlEl.innerText.length;
+
+        if (textLength == 0) return;
+
+        const childrenLength = Array.from(htmlEl.children).reduce((acc: number, currentValue: Element) => 
+            acc + ((currentValue as HTMLElement).innerText?.length || 0), 0);
+
+        const percentageInner = childrenLength / textLength * 100;
+        const sidebarContent = htmlEl.closest('#eduai-sidebar');
+
+        const nonContent = htmlEl.closest('nav, footer, header, aside');
+        const ariaContent = htmlEl.closest('[role="navigation"], [role="banner"], [role="contentinfo"]');
+        const significantContent = !sidebarContent && !nonContent && !ariaContent;
+
+        if (!significantContent){
+            console.log(`${htmlEl.tagName} : ${htmlEl.innerText} is not a significant content.`);
+        }
+
+        if (percentageInner >= 60){
+            console.log(`${htmlEl.tagName} : ${htmlEl.innerText} is a parent container`);
+        }
+
+        if (significantContent && htmlEl.innerText && htmlEl.innerText.length >= 30 &&  percentageInner <= 60){
+            observer.observe(htmlEl);
+        }
+    });
 
     return {
         title: title,
@@ -531,19 +565,20 @@ function initialize() {
 
     button.addEventListener('click', async () => {
         const loader = renderLoadingIndicator(contentDiv);
+        console.log(viewedContent);
+        try{
+            const response = await fetch('http://localhost:8000/analyze', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    ...metadata,
+                    frameContent: viewedContent.join('\n\n')
+                })
+            });
 
-        const response = await fetch('http://localhost:8000/analyze', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                ...metadata,
-                frameContent: viewedContent.join('\n\n')
-            })
-        });
-
-        if (response.body) {
+            if (response.body) {
             const reader = response.body.getReader();
             async function generate() {
                 // const resultDiv = document.createElement('div');
@@ -573,6 +608,11 @@ function initialize() {
             }
 
             generate();
+        }
+        }catch (error) {
+            console.log(error);
+            contentDiv.removeChild(loader);
+            contentDiv.appendChild(el('p', {}, (error as Error).message));
         }
     });
 }
