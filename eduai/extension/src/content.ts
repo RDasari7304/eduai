@@ -119,14 +119,45 @@ function renderHeader(sidebar: HTMLElement) {
     sidebar.appendChild(divider);
 }
 
-function createHeader(text: string) {
-    const heading = document.createElement('h1');
-    heading.textContent = text;
-    heading.style.fontSize = '24px';
-    heading.style.color = 'white';
+function renderLoadingIndicator(Sidebar: HTMLElement) : HTMLElement {
+    const loadingdiv = el('div', {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '40px 0',
+        gap: '16px'
+    });
 
-    return heading;
+    const spinner = el('div', {
+        width: '24px',
+        height: '24px',
+        border: '3px solid #333',
+        borderTop: '3px solid #6c5ce7',
+        borderRadius: '50%',
+    });
+
+    const styleTag = document.createElement('style');
+    styleTag.textContent = `
+        @keyframes eduai-spin { to { transform: rotate(360deg); } }
+        #eduai-spinner { animation: eduai-spin 0.8s linear infinite; }
+    `;
+
+    document.head.appendChild(styleTag);
+    spinner.id = 'eduai-spinner';
+
+    const loadingText = el('p', {
+        fontSize: '13px',
+        color: '#666',
+    }, 'Analyzing...');
+
+    loadingdiv.appendChild(spinner);
+    loadingdiv.appendChild(loadingText);
+    Sidebar.appendChild(loadingdiv);
+
+    return loadingdiv;
 }
+
 
 function extractWithReadability() {
     const title = document.title;
@@ -172,8 +203,6 @@ function extractWithReadability() {
 
 function initialize() {
     const sidebar = createSidebar();
-    const sidebarHeader = createHeader('EduAI');
-    sidebar.appendChild(sidebarHeader);
 
     const metadata = extractWithReadability();
 
@@ -184,10 +213,10 @@ function initialize() {
     renderHeader(sidebar);
 
     sidebar.appendChild(button);  
-    sidebar.append(el('p', { marginTop: '8px', fontSize: '12px', color: '#ccc' }, 'AI analysis may take a moment.'));
-
 
     button.addEventListener('click', async () => {
+        const loader = renderLoadingIndicator(sidebar);
+
         const response = await fetch('http://localhost:8000/analyze', {
             method: 'POST',
             headers: {
@@ -201,6 +230,7 @@ function initialize() {
 
         if (response.body) {
             const reader = response.body.getReader();
+            sidebar.removeChild(loader);
             async function generate() {
                 const resultDiv = document.createElement('div');
                 resultDiv.style.marginTop = '16px';
