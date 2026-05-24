@@ -18,6 +18,23 @@ function el<K extends keyof HTMLElementTagNameMap>(tagNameL: K,
     return node;
 }
 
+function createBadge(text:string, bg: string) {
+    return el('span', {
+        display: 'inline-block',
+        padding: '3px 10px',
+        borderRadius: '12px',
+        fontSize: '11px',
+        fontWeight: '600',
+        letterSpacing: '0.5px',
+        background: bg,
+        color: '#fff',
+        marginRight: '6px',
+        marginTop: '6px',
+        marginBottom : '6px',
+        textTransform: 'uppercase',
+    }, text);
+}
+
 
 function createSidebar() {
 
@@ -119,7 +136,7 @@ function renderHeader(sidebar: HTMLElement) {
     sidebar.appendChild(divider);
 }
 
-function renderLoadingIndicator(Sidebar: HTMLElement) : HTMLElement {
+function renderLoadingIndicator(contentDiv: HTMLElement) : HTMLElement {
     const loadingdiv = el('div', {
         display: 'flex',
         flexDirection: 'column',
@@ -153,9 +170,302 @@ function renderLoadingIndicator(Sidebar: HTMLElement) : HTMLElement {
 
     loadingdiv.appendChild(spinner);
     loadingdiv.appendChild(loadingText);
-    Sidebar.appendChild(loadingdiv);
+    contentDiv.appendChild(loadingdiv);
 
     return loadingdiv;
+}
+
+// Parse function to understand json response object
+function parseAIResponse(responseText: string): any {
+    try {
+        const json = JSON.parse(responseText);
+        return json;
+    } catch (error) {
+        console.error('Error parsing AI response:', error);
+    }
+
+    const strippedResponse = responseText.replace(/```json\s*/g, '').replace(/```\s*/g, '')
+
+    try {
+        const json = JSON.parse(strippedResponse);
+        return json;
+    } catch (error) {   
+        console.error('Error parsing AI response after stripping markdown:', error);
+    }
+
+    const substringStrippedResponse = strippedResponse.substring(strippedResponse.indexOf('{'), strippedResponse.lastIndexOf('}') + 1);
+
+    try {
+        const json = JSON.parse(substringStrippedResponse);
+        return json;
+    } catch (error) {   
+        console.error('Error parsing AI response after stripping to substring:', error);
+        return null;
+    }
+}
+
+// Rendering the actual content
+
+function renderTopicSummary(contentDiv: HTMLElement, data: any){
+    const topicRow = el ('div', {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginTop: '16px',
+        flexWrap: 'wrap'
+    });
+
+    const topicHeading = el('h2', {
+        fontSize: '20px',
+        fontWeight: '700',
+        color: '#fff',
+        margin: '0'
+    }, data.topic || 'Unknown Topic');
+
+    topicRow.append(topicHeading);
+    if (data.subject) topicRow.appendChild(createBadge(data.subject, '#6c5ce7'));
+    contentDiv.append(topicRow);
+
+    if (data.summary){
+        const summary = el('p', {
+            fontSize: '13px',
+            lineHeight: '1.6',
+            color: '#bbb',
+            margin: '12px 0 0 0',
+            padding: '12px',
+            background: '#1a1a2e',
+            borderRadius: '8px',
+            borderLeft: '3px solid #6c5ce7',
+        }, data.summary);
+        contentDiv.appendChild(summary);
+    }
+
+}
+
+function sectionTitle(text: string): HTMLHeadingElement{
+    return el('h3', {
+        fontSize: '11px',
+        fontWeight: '700',
+        textTransform: 'uppercase',
+        letterSpacing: '1.2px',
+        color: '#888',
+        margin: '20px 0 10px 0',
+        padding: '0',
+    }, text);
+}
+
+function renderKeyConcepts(contentDiv: HTMLElement, concepts: any[]){
+    if (!concepts || concepts.length == 0) return;
+
+    contentDiv.appendChild(sectionTitle('Key Concepts'));
+    
+    const list = el('div', {display: 'flex', flexDirection: 'column', gap: '6px'});
+
+    concepts.forEach((concept:any) => {
+        const item = el('div', {
+            padding: '10px 12px',
+            background: '#1a1a2e',
+            borderRadius: '6px',
+            fontSize: '13px',
+            lineHeight: '1.5'
+        });
+
+        const term = typeof concept === 'string' ? concept : (concept.term || concept.name || '');
+        const def = typeof concept == 'string' ? '' : (concept.definition || concept.description || '');
+
+        const termEl = el('span', {fontWeight: '600', color: '#a29bfe'}, term);
+        item.appendChild(termEl);
+
+        if (def) {
+            const defEl = el('span', {color: '#999'}, `- ${def}`)
+            item.appendChild(defEl);
+        }
+
+        list.appendChild(item);
+    });
+
+    contentDiv.appendChild(list);
+}
+
+function renderFlashcards(contentDiv: HTMLElement, flashcards: any[]) {
+    if (!flashcards || flashcards.length === 0) return;
+ 
+    contentDiv.appendChild(sectionTitle('Flashcards'));
+ 
+    let currentIndex = 0;
+    let showingFront = true;
+ 
+    const container = el('div', {});
+ 
+    // Card
+    const card = el('div', {
+        padding: '20px',
+        background: 'linear-gradient(135deg, #1e1e3a, #252547)',
+        borderRadius: '12px',
+        minHeight: '100px',
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        alignItems: 'center',
+        cursor: 'pointer',
+        transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+        border: '1px solid #333',
+        textAlign: 'center',
+    });
+ 
+    const sideLabel = el('span', {
+        fontSize: '10px',
+        fontWeight: '600',
+        textTransform: 'uppercase',
+        letterSpacing: '1px',
+        color: '#6c5ce7',
+        marginBottom: '10px',
+    }, 'QUESTION');
+ 
+    const cardText = el('p', {
+        fontSize: '14px',
+        lineHeight: '1.6',
+        color: '#e2e2e2',
+        margin: '0',
+    }, flashcards[0].front || '');
+ 
+    card.appendChild(sideLabel);
+    card.appendChild(cardText);
+ 
+    const flipHint = el('p', {
+        fontSize: '11px',
+        color: '#555',
+        margin: '8px 0 0 0',
+        textAlign: 'center',
+    }, 'Click card to flip');
+ 
+    function updateCard() {
+        const fc = flashcards[currentIndex];
+        showingFront = true;
+        sideLabel.textContent = 'QUESTION';
+        sideLabel.style.color = '#6c5ce7';
+        cardText.textContent = fc.front || '';
+        card.style.borderColor = '#333';
+        counter.textContent = `${currentIndex + 1} / ${flashcards.length}`;
+    }
+ 
+    card.addEventListener('click', () => {
+        const fc = flashcards[currentIndex];
+        showingFront = !showingFront;
+        if (showingFront) {
+            sideLabel.textContent = 'QUESTION';
+            sideLabel.style.color = '#6c5ce7';
+            cardText.textContent = fc.front || '';
+            card.style.borderColor = '#333';
+        } else {
+            sideLabel.textContent = 'ANSWER';
+            sideLabel.style.color = '#00b894';
+            cardText.textContent = fc.back || '';
+            card.style.borderColor = '#00b89440';
+        }
+    });
+ 
+    card.addEventListener('mouseenter', () => {
+        card.style.transform = 'scale(1.01)';
+        card.style.boxShadow = '0 4px 20px rgba(108,92,231,0.15)';
+    });
+    card.addEventListener('mouseleave', () => {
+        card.style.transform = 'scale(1)';
+        card.style.boxShadow = 'none';
+    });
+ 
+    // Controls
+    const controls = el('div', {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginTop: '10px',
+    });
+ 
+    const btnStyle: Partial<CSSStyleDeclaration> = {
+        padding: '6px 16px',
+        fontSize: '12px',
+        fontWeight: '600',
+        border: '1px solid #333',
+        borderRadius: '6px',
+        background: '#1a1a2e',
+        color: '#ccc',
+        cursor: 'pointer',
+    };
+ 
+    const prevBtn = el('button', btnStyle, '← Prev');
+    const counter = el('span', { fontSize: '12px', color: '#666' }, `1 / ${flashcards.length}`);
+    const nextBtn = el('button', btnStyle, 'Next →');
+ 
+    prevBtn.addEventListener('click', () => {
+        if (currentIndex > 0) { currentIndex--; updateCard(); }
+    });
+    nextBtn.addEventListener('click', () => {
+        if (currentIndex < flashcards.length - 1) { currentIndex++; updateCard(); }
+    });
+ 
+    controls.appendChild(prevBtn);
+    controls.appendChild(counter);
+    controls.appendChild(nextBtn);
+ 
+    container.appendChild(card);
+    container.appendChild(flipHint);
+    container.appendChild(controls);
+    contentDiv.appendChild(container);
+}
+
+function renderResources(contentDiv: HTMLElement, topic: string){
+    if (!topic) return;
+
+    contentDiv.append(sectionTitle('Resources'));
+
+    const linkContainer = el('div', {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px'
+    });
+
+    const ytQuery = encodeURIComponent(`${topic} explained`);
+    const quizletQuery = encodeURIComponent(topic)
+
+    const ytLink = el('a', {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 14px',
+        background: '#1a1a2e',
+        borderRadius: '8px',
+        color: '#ff6b6b',
+        fontSize: '13px',
+        fontWeight: '600',
+        textDecoration: 'none',
+        border: '1px solid #333',
+    }, '▶  Search YouTube');
+
+    ytLink.setAttribute('href',`https://www.youtube.com/results?search_query=${ytQuery}`);
+    ytLink.setAttribute('target', '_blank');
+    
+    const qlLink = el('a', {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        padding: '10px 14px',
+        background: '#1a1a2e',
+        borderRadius: '8px',
+        color: '#4ecdc4',
+        fontSize: '13px',
+        fontWeight: '600',
+        textDecoration: 'none',
+        border: '1px solid #333',
+    }, '📚  Search Quizlet');
+    qlLink.setAttribute('href', `https://quizlet.com/search?query=${quizletQuery}`);
+    qlLink.setAttribute('target', '_blank');
+
+    linkContainer.appendChild(ytLink);
+    linkContainer.appendChild(qlLink);
+
+    contentDiv.append(linkContainer);
+
 }
 
 
@@ -212,10 +522,15 @@ function initialize() {
     const button = renderAnalyzeButton();
     renderHeader(sidebar);
 
+    const contentDiv = el('div', {
+        display :'flex',
+        flexDirection: 'column'
+    });
+    sidebar.appendChild(contentDiv);
     sidebar.appendChild(button);  
 
     button.addEventListener('click', async () => {
-        const loader = renderLoadingIndicator(sidebar);
+        const loader = renderLoadingIndicator(contentDiv);
 
         const response = await fetch('http://localhost:8000/analyze', {
             method: 'POST',
@@ -230,23 +545,31 @@ function initialize() {
 
         if (response.body) {
             const reader = response.body.getReader();
-            sidebar.removeChild(loader);
             async function generate() {
-                const resultDiv = document.createElement('div');
-                resultDiv.style.marginTop = '16px';
-                resultDiv.textContent = `AI Analysis: `;
-                sidebar.appendChild(resultDiv);
+                // const resultDiv = document.createElement('div');
+                // resultDiv.style.marginTop = '16px';
+                // resultDiv.textContent = `AI Analysis: `;
+                // sidebar.appendChild(resultDiv);
 
                 const decoder = new TextDecoder();
+                let jsonResp = "";
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
                     const chunk = decoder.decode(value);
                     console.log('Received chunk:', chunk);
+                    jsonResp += chunk;
                     
-                    resultDiv.textContent += chunk;
+                    //resultDiv.textContent += chunk;
                 }
+
+                contentDiv.removeChild(loader);
+                const parsedResponse = parseAIResponse(jsonResp);
+                renderTopicSummary(contentDiv, parsedResponse);
+                renderKeyConcepts(contentDiv, parsedResponse.keyConcepts);
+                renderFlashcards(contentDiv, parsedResponse.flashcards);
+                renderResources(contentDiv, parsedResponse.topic);
             }
 
             generate();
