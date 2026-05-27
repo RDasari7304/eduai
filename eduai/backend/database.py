@@ -1,17 +1,32 @@
 import sqlite3
 import os
 import hashlib
-import datetime
+from datetime import datetime
+import json
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def embedding_encode(text):
+    return embedding_model.encode(text, normalize_embeddings=True)
+
+def compare_embeddings(embedding1, embedding2):
+    return embedding1.dot(embedding2)
 
 def get_db():
-    return sqlite3.connect('eduai.db')
+    conn = sqlite3.connect('eduai.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
     conn = sqlite3.connect('eduai.db')
     cursor = conn.cursor()
 
+    # Foreign key constraints ensures that parentid exists when concept is inserted
     CREATE_CONCEPTS_TABLE = '''
     CREATE TABLE IF NOT EXISTS concepts (
+        parentid        TEXT DEFAULT NULL,
         id              TEXT PRIMARY KEY,
         name            TEXT NOT NULL,
         subject         TEXT NOT NULL,
@@ -24,7 +39,9 @@ def init_db():
         quiz_correct    INTEGER DEFAULT 0,
         quiz_incorrect  INTEGER DEFAULT 0,
         confidence_sum  REAL DEFAULT 0.0,
-        status          TEXT DEFAULT 'new'
+        status          TEXT DEFAULT 'new',
+        embedding       TEXT DEFAULT '[]',
+        FOREIGN KEY (parentid) REFERENCES concepts(id)
     );
     '''
     CREATE_ENCOUNTERS_TABLE = '''
@@ -79,3 +96,63 @@ def init_db():
     cursor.execute(CREATE_QUIZ_RESULTS_TABLE)
     cursor.execute(CREATE_RELATIONSHIPS_TABLE)
     cursor.execute(CREATE_STUDY_SESSIONS_TABLE)
+
+def get_knowledge(cursor):
+    return cursor.execute(
+        '''SELECT id, parentid, name, subject, mastery_score, times_encountered, status from
+            concepts'''
+    ).fetchall()
+
+
+def upsert_concept(name, subject, parent, url, cursor, embedding, all_concepts, threshold=0.7):
+    conceptHash = hashlib.sha256(name.lower().strip().encode()).hexdigest()
+
+    time = datetime.utcnow().isoformat()
+    similarConcept = find_similar_concept(embedding, all_concepts)
+
+    operationPerformed = ""
+
+    if similarConcept is not None:
+        print(f'{name} -> {similarConcept[3]}')
+        print(f'score: {similarConcept[1]}')
+
+    if similarConcept is not None and similarConcept[1] >= threshold:
+        operationPerformed = "update"
+        matched_id = similarConcept[0]
+    else:
+        exists = cursor.execute("SELECT EXISTS(SELECT 1 FROM concepts WHERE id = ?)", (conceptHash,)).fetchone()
+        if exists[0] == 1:
+            operationPerformed = "update"
+            matched_id = conceptHash
+        else:
+            matched_id = None
+
+    if matched_id is None:
+        operationPerformed = "new"
+        cursor.execute(
+            "INSERT INTO concepts(parentid, id, name, subject, first_seen, last_seen, times_encountered, sources, embedding) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (parent, conceptHash, name, subject, time, time, json.dumps([url]), json.dumps(embedding.tolist()))
+        )
+    else:
+        row = cursor.execute("SELECT sources FROM concepts WHERE id = ?", (matched_id,)).fetchone()
+        sources = json.loads(row["sources"])
+        if url not in sources:
+            sources.append(url)
+        cursor.execute(
+            "UPDATE concepts SET times_encountered = times_encountered + 1, last_seen = ?, sources = ? WHERE id = ?",
+            (time, json.dumps(sources), matched_id)
+        )
+
+    return operationPerformed, matched_id if matched_id else conceptHash
+
+
+def find_similar_concept(concept_embedding, all_concepts):
+    similarities_results = []
+    for concept in all_concepts:
+        embedding = np.array(json.loads(concept['embedding']))
+        similarities_results.append((concept['id'], compare_embeddings(concept_embedding, embedding), embedding, concept['name']))
+
+    if not similarities_results:
+        return None
+
+    return max(similarities_results, key=lambda x: x[1])
