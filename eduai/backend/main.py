@@ -9,7 +9,7 @@ import hashlib
 import numpy as np
 import json
 
-from database import upsert_concept, init_db, get_db, embedding_encode, get_knowledge, compare_embeddings
+from database import upsert_concept, init_db, get_db, embedding_encode, build_concept_tree, tree_to_string
 
 app = FastAPI()
 app.add_middleware(
@@ -57,28 +57,40 @@ async def analyze_article(article: Article):
         cached_response = responseCache[url_hash]
         return StreamingResponse(iter([cached_response]), media_type="text/plain")
 
+    conn = get_db()
+    cursor = conn.cursor()
+    concept_tree = build_concept_tree(cursor)
+    tree_str = tree_to_string(concept_tree)
+
     openai_response = await asyncai.chat.completions.create(  
         model = "open-mistral-7b",
         messages= [
-            {"role": "system", "content": '''
-                "You are a helpful assistant that analyzes the context of the webpage and provides insightful feedback.
-              Provide the response in a JSON format with the following keys: 'topic' - a short string identifying the main topic, 
+            {"role": "system", "content": """You are a helpful assistant that analyzes the 
+             context of the webpage and provides insightful feedback. 
+             Provide the response in a JSON format with the following keys: 
+             'topic' - a short string identifying the main topic, 
              'subject' - the academic category such as Biology, History, Computer Science, 
              'summary' - a 2 to 3 sentence overview of the page content on a single line, 
-             'keyConcepts' - a list of key concepts, 'flashcards' - an array of 5 flashcard objects each with a front and back, 
-             'concepts' - an array of academic concepts found in the content organized hierarchically where each entry has 'name' 
-             (a specific topic like Chain Rule or Tiger Paw Morphology), 'subject' (the academic field), and 'parent' 
-             (the broader topic this concept belongs under like Derivatives or Tiger Anatomy). 
-             Return parent concepts as their own entries too so the hierarchy is complete. 
-             Parents should also have a parent field pointing to an even broader topic or null if they are the top level. 
-             For example a page about derivatives might return Chain Rule with parent Derivatives and Derivatives with parent Calculus and Calculus with parent null. 
-             Aim for 2 to 3 levels of depth. Merge related specifics into one concept rather than listing them separately. 
-             'relationships' - an array identifying connections between the extracted concepts where each entry has 'from' (source concept name), 'to' 
-             (target concept name), and 'type' (one of prerequisite, part_of, related_to, contrasts_with). Only include relationships you are confident about. 
-             Respond with raw JSON only. No markdown fences. No code blocks. Keep all string values on a single line with no line breaks inside them."
-            ''' },
-            {"role": "user", "content": f"Analyze the following article and provide insights:\n\nTitle: {article.title}\nURL: {article.full_url}\nHostname: {article.hostname}\nPath Name: {article.path_name}\nContent: {(article.frameContent or "")[:3000]}"
-            }
+             'keyConcepts' - a list of key concepts, 
+             'flashcards' - an array of 5 flashcard objects each with a front and back, 
+             'concepts' - an array of academic concepts organized into exactly 3 levels of 
+             hierarchy: Discipline, Topic, Subtopic. 
+             The top-level parent must be one of these academic disciplines: 
+             Mathematics, Physics, Chemistry, Biology, Computer Science, History,
+              Literature, Psychology, Economics, Engineering, Medicine, Philosophy, 
+             Geography, Sociology, Political Science, Art, Music, Linguistics. 
+             Each concept entry has 'name', 'subject', and 'parent'. 
+             Level 1 (Discipline) has parent null. 
+             Level 2 (Topic like Calculus or Thermodynamics) has a Discipline as parent. 
+             Level 3 (Subtopic like Chain Rule or Wave Equation) has a Topic as parent. 
+             Never create roots that are not from the discipline list. 
+             Return discipline and topic entries as their own concepts so the hierarchy is complete. 
+             Merge related specifics into one concept. 
+             If the existing knowledge graph already has the relevant topics, 
+             use those exact names as parents. 
+             Respond with raw JSON only. 
+             No markdown fences. No code blocks. Keep all string values on a single line with no line breaks inside them."""},
+            {"role": "user", "content": f"Analyze the following article and provide insights:\n\nTitle: {article.title}\nURL: {article.full_url}\nHostname: {article.hostname}\nPath Name: {article.path_name}\nContent: {(article.frameContent or '')[:3000]}" + (f"\n\nExisting knowledge graph:\n{tree_str}" if tree_str else "")}
         ],
         stream = True
     );
@@ -94,6 +106,17 @@ async def analyze_article(article: Article):
         responseCache[url_hash] = cachestr
     
     return StreamingResponse(generate(), media_type="text/plain")
+
+@app.get('/knowledge/test')
+async def get_knowledge_test():
+    conn = get_db()
+    cursor = conn.cursor()
+    concept_tree = build_concept_tree(cursor)
+    tree_str = tree_to_string(concept_tree)
+
+    print(tree_str)
+    return {"base": concept_tree.pop(list(concept_tree.keys())[1])}
+
 
 # @app.get('/knowledge/reconstruct')
 # async def reconstructKnowledge():
@@ -132,18 +155,7 @@ async def getKnowledge():
     conn = get_db()
     cursor = conn.cursor()
 
-    knowledge_base = get_knowledge(cursor)
-    base_dictionary = {concept['id']: {'parentid': concept['parentid'], 
-                       'subject': concept['subject'], 'name': concept['name'], 'children': []} for concept in knowledge_base}
-    
-    for concept in knowledge_base:
-        if concept['parentid'] is None:
-            continue
-
-        if concept['parentid'] in base_dictionary:
-            base_dictionary[concept['parentid']]['children'].append(base_dictionary[concept['id']])
-    
-    base_dictionary = {k: v for k,v in base_dictionary.items() if v['parentid'] is None}
+    base_dictionary = build_concept_tree(cursor)
 
     conn.close()
     print(base_dictionary)

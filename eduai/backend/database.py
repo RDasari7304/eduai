@@ -7,6 +7,17 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+disciplines = ['Mathematics', 
+               'Physics', 
+               'Chemistry', 
+               'Biology', 
+               'Computer Science', 
+               'History', 'Literature',
+                 'Psychology', 'Economics',
+                   'Engineering', 'Medicine', 
+                   'Philosophy', 'Geography', 
+                   'Sociology', 'Political Science', 
+                   'Art', 'Music', 'Linguistics']
 
 def embedding_encode(text):
     return embedding_model.encode(text, normalize_embeddings=True)
@@ -44,6 +55,27 @@ def init_db():
         FOREIGN KEY (parentid) REFERENCES concepts(id)
     );
     '''
+
+    cursor.execute(CREATE_CONCEPTS_TABLE)
+    discipline_embeddings = embedding_encode(disciplines)
+    
+    CREATE_DISCIPLINE_STMT = '''
+    INSERT OR IGNORE into concepts (id, name, subject, first_seen, last_seen, embedding) 
+    values (?, ?, ?, ?, ?, ?)
+    '''
+    for i in range(len(disciplines)):
+        discipline = disciplines[i]
+        discipline_hash = hashlib.sha256(discipline.lower().strip().encode()).hexdigest()
+        time = datetime.utcnow().isoformat()
+
+        cursor.execute(CREATE_DISCIPLINE_STMT, (discipline_hash,
+                                               discipline,
+                                               discipline,
+                                               time,
+                                               time,
+                                               json.dumps(discipline_embeddings[i].tolist())))
+    
+
     CREATE_ENCOUNTERS_TABLE = '''
     CREATE TABLE IF NOT EXISTS encounters (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,17 +123,44 @@ def init_db():
 
     '''
 
-    cursor.execute(CREATE_CONCEPTS_TABLE)
     cursor.execute(CREATE_ENCOUNTERS_TABLE)
     cursor.execute(CREATE_QUIZ_RESULTS_TABLE)
     cursor.execute(CREATE_RELATIONSHIPS_TABLE)
     cursor.execute(CREATE_STUDY_SESSIONS_TABLE)
+    conn.commit()
+    conn.close()
 
-def get_knowledge(cursor):
+def fetch_all_concepts(cursor):
     return cursor.execute(
         '''SELECT id, parentid, name, subject, mastery_score, times_encountered, status from
             concepts'''
     ).fetchall()
+
+def build_concept_tree(cursor):
+    knowledge = fetch_all_concepts(cursor)
+
+    node_map = {concept['id']: {'parentid': concept['parentid'], 
+                       'subject': concept['subject'], 'name': concept['name'], 'children': []} for concept in knowledge}
+    
+    for concept in knowledge:
+        if concept['parentid'] is None:
+            continue
+
+        if concept['parentid'] in node_map:
+            node_map[concept['parentid']]['children'].append(node_map[concept['id']])
+    
+    node_map = {k: v for k,v in node_map.items() if v['parentid'] is None}
+    return node_map
+
+def tree_to_string(tree):
+    def format_node(node, depth):
+        return " " * depth + node['name'] + "\n" + "".join([format_node(child_node, depth + 1) for child_node in node['children']]) 
+
+    result = ""
+    for parent in tree.values():
+        result += format_node(parent, 0)
+
+    return result
 
 
 def upsert_concept(name, subject, parent, url, cursor, embedding, all_concepts, threshold=0.7):

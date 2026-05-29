@@ -1,7 +1,77 @@
 import { Readability } from "@mozilla/readability";
 
-
 const viewedContent: string[] = [];
+let currentState: string = "reading";
+let velocityHistory: number[] = [0, 0, 0 , 0 , 0];
+let lastScrollY: number = window.scrollY;
+let stateStartTime: number = Date.now();
+let lastMouseMoveTime: number = stateStartTime;
+let lowVelocityTicks = 0;
+let highVelocityTicks = 0;
+
+setInterval(() => {
+    const currScrollY = window.scrollY;
+    const velocity = Math.abs(window.scrollY - lastScrollY);
+    velocityHistory.shift();
+    velocityHistory.push(velocity);
+
+    lastScrollY = currScrollY;
+
+    const smoothed_velocity = velocityHistory.reduce((a, b) => 
+        a + b
+    , 0) / velocityHistory.length
+    
+    let newState = currentState;
+
+    switch(currentState){
+        case "reading":
+            if(smoothed_velocity >= 40){
+                highVelocityTicks += 1;
+                if(highVelocityTicks >= 5){
+                    newState = "scrolling";
+                    lowVelocityTicks = 0;
+                }
+            }else if(smoothed_velocity == 0 && Date.now() - lastMouseMoveTime >= 45000){
+                newState = "idle";
+            }else{
+                highVelocityTicks = 0;
+            }
+            break;
+        case "scrolling":
+            if(smoothed_velocity <= 10){
+                lowVelocityTicks += 1;
+                if(lowVelocityTicks >= 15){
+                    newState = "reading";
+                    highVelocityTicks = 0;
+                }
+            }else{
+                lowVelocityTicks = 0;
+            }
+            break;
+        case "idle":
+            if(smoothed_velocity > 0){
+                newState = "scrolling"
+            }
+    }
+
+    if (newState != currentState){
+        console.log(currentState + " → " + newState);
+        currentState = newState;
+    }
+
+
+}, 100);
+
+
+document.onmousemove = () => {
+    lastMouseMoveTime = Date.now();
+    if(currentState == "idle") currentState = "reading";
+};
+
+
+
+
+
 
 // K extends keyof HTMLElementTagNameMap ensures that the tagNameL is a valid HTML tag
 // Return type is inferred to be the corresponding HTMLElement type based on the tag name
@@ -831,7 +901,7 @@ function initialize() {
 
     document.body.style.marginRight = '350px';
     document.body.appendChild(sidebar);
-    
+
     const fontStyle = document.createElement('style');
     fontStyle.textContent = `
         .eduai-modal * {
