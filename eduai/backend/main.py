@@ -9,7 +9,7 @@ import hashlib
 import numpy as np
 import json
 
-from database import upsert_concept, init_db, get_db, embedding_encode, build_concept_tree, tree_to_string
+from database import upsert_concept, init_db, get_db, embedding_encode, build_concept_tree, tree_to_string, upsert_analysis, fetch_analyses
 
 app = FastAPI()
 app.add_middleware(
@@ -38,9 +38,18 @@ class Concept(BaseModel):
     subject: str
     parent: str | None = None
 
+class FlashCard(BaseModel):
+    front: str
+    back: str
+
 class KnowledgeUpdate(BaseModel):
     url: str
     concepts: list[Concept]
+    topic: str | None = None
+    summary: str | None = None
+    flashcards: list[FlashCard] | None = None
+    key_concepts: list[str] | None = None
+
 
 responseCache: dict[str, any] = {}
 
@@ -73,21 +82,16 @@ async def analyze_article(article: Article):
              'summary' - a 2 to 3 sentence overview of the page content on a single line, 
              'keyConcepts' - a list of key concepts, 
              'flashcards' - an array of 5 flashcard objects each with a front and back, 
-             'concepts' - an array of academic concepts organized into exactly 3 levels of 
-             hierarchy: Discipline, Topic, Subtopic. 
-             The top-level parent must be one of these academic disciplines: 
-             Mathematics, Physics, Chemistry, Biology, Computer Science, History,
-              Literature, Psychology, Economics, Engineering, Medicine, Philosophy, 
-             Geography, Sociology, Political Science, Art, Music, Linguistics. 
-             Each concept entry has 'name', 'subject', and 'parent'. 
-             Level 1 (Discipline) has parent null. 
-             Level 2 (Topic like Calculus or Thermodynamics) has a Discipline as parent. 
-             Level 3 (Subtopic like Chain Rule or Wave Equation) has a Topic as parent. 
-             Never create roots that are not from the discipline list. 
-             Return discipline and topic entries as their own concepts so the hierarchy is complete. 
-             Merge related specifics into one concept. 
-             If the existing knowledge graph already has the relevant topics, 
-             use those exact names as parents. 
+             'concepts' - Extract the main topic of this page as ONE primary concept, with 2-4 broad subtopics as children. 
+             Structure is exactly: Discipline → Page Topic → Broad Subtopics. 
+             The discipline must be from this list: Mathematics, Physics, Chemistry, Biology, Computer Science, History, Literature, Psychology, Economics, Engineering, Medicine, Philosophy, Geography, Sociology, Political Science, Art, Music, Linguistics. 
+             Maximum 6 concepts total. Each has 'name', 'subject', and 'parent'. 
+             The page topic IS the main concept. Do NOT fragment the page into disconnected academic subcategories. 
+             GOOD example for a page about tigers: 
+             [{name: 'Biology', subject: 'Biology', parent: null}, {name: 'Tigers', subject: 'Biology', parent: 'Biology'}, {name: 'Tiger Anatomy', subject: 'Biology', parent: 'Tigers'}, {name: 'Tiger Conservation', subject: 'Biology', parent: 'Tigers'}] 
+             BAD example: [{name: 'Endangered Species', ...}, {name: 'Habitat Fragmentation', ...}, {name: 'Carnivora', ...}] - this loses the page identity entirely. 
+             Merge all related specifics into broad subtopics under the page topic. If the existing knowledge graph already has the relevant discipline or topic, use those exact names as parents.
+             If a new page topic logically falls under an existing topic in the knowledge graph, nest it there instead of creating a sibling.
              Respond with raw JSON only. 
              No markdown fences. No code blocks. Keep all string values on a single line with no line breaks inside them."""},
             {"role": "user", "content": f"Analyze the following article and provide insights:\n\nTitle: {article.title}\nURL: {article.full_url}\nHostname: {article.hostname}\nPath Name: {article.path_name}\nContent: {(article.frameContent or '')[:3000]}" + (f"\n\nExisting knowledge graph:\n{tree_str}" if tree_str else "")}
@@ -158,8 +162,18 @@ async def getKnowledge():
     base_dictionary = build_concept_tree(cursor)
 
     conn.close()
-    print(base_dictionary)
     return base_dictionary
+
+@app.get('/knowledge/analyses')
+async def getPageAnalyses(urls: str):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    query = urls.split(',')
+    analyses = fetch_analyses(query, cursor)
+
+    conn.close()
+    return analyses
 
 @app.post('/knowledge/update')
 async def updateKnowledge(update: KnowledgeUpdate):
@@ -203,14 +217,18 @@ async def updateKnowledge(update: KnowledgeUpdate):
         parent_id = id_map.get(parent_name) if parent_name else None
 
 
-        op, concept_hash = upsert_concept(name, subject, parent_id, update.url, cursor, name_to_embedding[name], all_existing, 0.8 if parent_id is None else 0.75)
+        op, concept_hash = upsert_concept(name, subject, parent_id, update.url, cursor, name_to_embedding[name], all_existing, 0.85 if parent_id is None else 0.8)
         id_map[name] = concept_hash
 
         if op == "new":
             new_count += 1
         else:
             update_count += 1
+    
+    if update.summary:
+        flashcards = [flashcard.model_dump() for flashcard in update.flashcards] if update.flashcards else []
         
+        upsert_analysis(update.url, update.topic, update.summary, flashcards, update.key_concepts or [], cursor)
 
     conn.commit()
     conn.close()

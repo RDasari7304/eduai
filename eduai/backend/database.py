@@ -123,24 +123,47 @@ def init_db():
 
     '''
 
+    CREATE_PAGE_ANALYSES_TABLE = '''
+    CREATE TABLE IF NOT EXISTS page_analyses (
+        url TEXT PRIMARY KEY,
+        topic TEXT,
+        summary TEXT,
+        flashcards TEXT,
+        key_concepts TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    '''
+
     cursor.execute(CREATE_ENCOUNTERS_TABLE)
+    cursor.execute(CREATE_PAGE_ANALYSES_TABLE)
     cursor.execute(CREATE_QUIZ_RESULTS_TABLE)
     cursor.execute(CREATE_RELATIONSHIPS_TABLE)
     cursor.execute(CREATE_STUDY_SESSIONS_TABLE)
     conn.commit()
     conn.close()
 
+
+
 def fetch_all_concepts(cursor):
     return cursor.execute(
-        '''SELECT id, parentid, name, subject, mastery_score, times_encountered, status from
+        '''SELECT id, parentid, name, subject, mastery_score, times_encountered, status, sources from
             concepts'''
     ).fetchall()
+
+def fetch_analyses(urls, cursor):
+    placeholders = ','.join(['?' for _ in urls])
+    return cursor.execute(
+        f'''
+            SELECT topic, summary, flashcards, key_concepts from page_analyses where url IN ({placeholders})
+        '''
+    , urls).fetchall()
 
 def build_concept_tree(cursor):
     knowledge = fetch_all_concepts(cursor)
 
     node_map = {concept['id']: {'parentid': concept['parentid'], 
-                       'subject': concept['subject'], 'name': concept['name'], 'children': []} for concept in knowledge}
+                       'subject': concept['subject'], 'name': concept['name'], 'sources': concept['sources'], 'children': []} for concept in knowledge}
     
     for concept in knowledge:
         if concept['parentid'] is None:
@@ -203,6 +226,12 @@ def upsert_concept(name, subject, parent, url, cursor, embedding, all_concepts, 
         )
 
     return operationPerformed, matched_id if matched_id else conceptHash
+
+def upsert_analysis(url, topic, summary, flashcards, key_concepts, cursor):
+    now = datetime.utcnow().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO page_analyses (url, topic, summary, flashcards, key_concepts, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)               
+    ''', (url, topic, summary, json.dumps(flashcards), json.dumps(key_concepts), now, now))
 
 
 def find_similar_concept(concept_embedding, all_concepts):
