@@ -1,107 +1,102 @@
-import { setExplainModeActive, explainModeActive, setCurrHighlight, currHighlight, pageMetadata } from '../util/state';
+import {pageMetadata } from '../util/state';
 import { el, navigateTo } from '../util/utils';
 import {applyInlineFormatting, flattenKnowledge, renderMarkdown} from '../util/ui';
 import { contentArea, knowledgeTree, FONT_FAMILY } from '../util/state';
 import { viewHome } from './home';
 
 
-const banner = el('div', {
-    position: 'fixed', top: '0', left: '0', right: '360px',
-    padding: '8px 0', background: 'linear-gradient(135deg, #7c5cf7, #3b82f6)',
-    color: '#fff', fontSize: '12px', fontWeight: '600',
-    textAlign: 'center', zIndex: '99998',
-    letterSpacing: '0.3px',
-    boxShadow: '0 2px 12px rgba(124,92,247,0.3)', fontFamily: FONT_FAMILY,
-}, '✦  Explain Mode — click any element');
+// const banner = el('div', {
+//     position: 'fixed', top: '0', left: '0', right: '360px',
+//     padding: '8px 0', background: 'linear-gradient(135deg, #7c5cf7, #3b82f6)',
+//     color: '#fff', fontSize: '12px', fontWeight: '600',
+//     textAlign: 'center', zIndex: '99998',
+//     letterSpacing: '0.3px',
+//     boxShadow: '0 2px 12px rgba(124,92,247,0.3)', fontFamily: FONT_FAMILY,
+// }, '✦  Explain Mode — click any element');
 
-function toggleExplainMode(active: boolean, e: any) {  
-    setExplainModeActive(active);
-    if (active) {
-        e.preventDefault();
-        document.body.style.cursor = 'pointer';
-        document.body.appendChild(banner);
-    }else{
-        document.body.removeChild(banner);
-        resetHighlight()
-        document.body.style.cursor = '';
-    }
-}
 
-function resetHighlight() {
-    if (!currHighlight) return;
-    currHighlight.style.outline = '';
-    currHighlight.style.outlineOffset = '';
-    currHighlight.style.backgroundColor = '';
-    currHighlight.style.borderRadius = '';
-    currHighlight.style.cursor = '';
-}
-
-function highlightElement(el: HTMLElement) {
-    if (!el) return;
-    setCurrHighlight(el);
-    el.style.outline = '2px dashed #7c5cf7';
-    el.style.outlineOffset = '2px';
-    el.style.backgroundColor = 'rgba(124, 92, 247, 0.06)';
-    el.style.borderRadius = '4px';
-    el.style.cursor = 'pointer';
-}
 
 export function initializeExplainMode() {
-    document.addEventListener('keydown', (e) => {
-        if (e.altKey && !explainModeActive ) {
-            toggleExplainMode(true, e);
-        }
+    let hintEl: HTMLElement | null = null;
 
-        if (e.ctrlKey){
-            e.preventDefault()
-            const selection = window.getSelection()
-            if (!selection || selection.isCollapsed){
-                return
+    document.addEventListener('mouseup', () => {
+        if (hintEl) { hintEl.remove(); hintEl = null; }
+
+        const selection = window.getSelection();
+        if (!selection || selection.isCollapsed || selection.toString().trim().length < 10) return;
+
+        const sidebar = document.getElementById('eduai-sidebar');
+        const anchorNode = selection.anchorNode?.parentElement;
+        if (sidebar?.contains(anchorNode || null)) return;
+
+        const range = selection.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+
+        hintEl = el('div', {
+            position: 'fixed',
+            left: `${rect.left + rect.width / 2}px`,
+            top: `${rect.top - 32}px`,
+            transform: 'translateX(-50%)',
+            padding: '4px 10px',
+            background: '#1a1a3a',
+            border: '1px solid #7c5cf7',
+            borderRadius: '6px',
+            fontSize: '10px',
+            fontWeight: '600',
+            color: '#a78bfa',
+            zIndex: '999999',
+            pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+            opacity: '0',
+            transition: 'opacity 0.15s ease, transform 0.15s ease',
+        }, '✦ Alt+E to explain');
+
+        document.body.appendChild(hintEl);
+
+        // Trigger transition on next frame
+        requestAnimationFrame(() => {
+            if (hintEl) {
+                hintEl.style.opacity = '1';
             }
-            console.log(selection.toString().trim())
-        }   
+        });
     });
 
-    document.addEventListener('keyup', (e) => {
-        if (e.key === 'Alt' && explainModeActive) {
-            toggleExplainMode(false, e);
+    document.addEventListener('mousedown', () => {
+        if (hintEl) { hintEl.remove(); hintEl = null; }
+    });
+
+    document.addEventListener('scroll', () => {
+        if (hintEl) { hintEl.remove(); hintEl = null; }
+    }, true);
+
+    document.addEventListener('keydown', (e) =>{
+        if(e.altKey && e.key === 'e'){
+            e.preventDefault();
+            const selection = window.getSelection();
+            if (!selection || selection.isCollapsed || selection.toString().trim().length < 10) return;
+
+            const range = selection.getRangeAt(0);
+            const container = range.commonAncestorContainer;
+            const anchorEl = container.nodeType === Node.TEXT_NODE
+                ? container.parentElement
+                : container as HTMLElement;
+
+            if (!anchorEl || anchorEl.tagName === 'BODY') return;
+
+            const sidebar = document.getElementById('eduai-sidebar');
+            if (sidebar?.contains(anchorEl)) return;
+
+            const selectedText = selection.toString().trim();
+            const { heading, context } = captureContext(anchorEl);
+
+            selection.removeAllRanges();
+            navigateTo(() => viewExplain(selectedText, heading, context, pageMetadata));
         }
-    });
 
-    document.addEventListener('mousemove', (e) => {
-        if (!explainModeActive) return;
-        const hoveredEl = e.target as HTMLElement | null;
-        if (!hoveredEl || hoveredEl.tagName?.toLowerCase() === 'body') return;
-        const sidebar = document.getElementById('eduai-sidebar');
-        if (sidebar?.contains(hoveredEl)) return;
-        if (!hoveredEl.innerText || hoveredEl.innerText.length < 10) return;
+    })
 
-        if (currHighlight !== hoveredEl) {
-            resetHighlight();
-        }
-
-        highlightElement(hoveredEl);
-    });
-
-    document.addEventListener('click', async (e) => {
-        if (!explainModeActive) return;
-        const clickedEl = e.target as HTMLElement | null;
-        if (!clickedEl || clickedEl.tagName?.toLowerCase() === 'body') return;
-        const sidebar = document.getElementById('eduai-sidebar');
-        if (sidebar?.contains(clickedEl)) return;
-        if (!clickedEl.innerText || clickedEl.innerText.length < 10) return;
-        e.preventDefault();
-        e.stopPropagation();
-
-        const { text, heading, context } = captureContext(clickedEl);
-        console.log(`Text: ${text}\nHeading: ${heading}\nContext: ${context}`);
-
-        navigateTo(() => viewExplain(text, heading, context, pageMetadata));
-        toggleExplainMode(false, e);
-
-    });
-
-    function captureContext(clickedEl: HTMLElement): { text: string; heading: string; context: string } {
+    function captureContext(anchorEl: HTMLElement): { text: string; heading: string; context: string } {
         const BLOCK_TAGS = ['P', 'LI', 'BLOCKQUOTE', 'PRE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TD', 'TH', 'DD', 'DT', 'FIGCAPTION'];
         const HEADING_RE = /^H[1-6]$/;
 
@@ -115,7 +110,7 @@ export function initializeExplainMode() {
             return el;
         }
 
-        const anchor = findAnchorBlock(clickedEl);
+        const anchor = findAnchorBlock(anchorEl);
         const text = anchor.innerText.trim();
         const anchorTop = anchor.getBoundingClientRect().top;
 
