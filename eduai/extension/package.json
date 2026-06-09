@@ -11,11 +11,15 @@
   },
   "dependencies": {
     "@mozilla/readability": "^0.6.0",
+    "katex": "^0.17.0",
+    "mathjax-full": "^3.2.1",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "temml": "^0.13.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/katex": "^0.16.8",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

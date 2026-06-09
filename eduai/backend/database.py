@@ -7,17 +7,12 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-disciplines = ['Mathematics', 
-               'Physics', 
-               'Chemistry', 
-               'Biology', 
-               'Computer Science', 
-               'History', 'Literature',
-                 'Psychology', 'Economics',
-                   'Engineering', 'Medicine', 
-                   'Philosophy', 'Geography', 
-                   'Sociology', 'Political Science', 
-                   'Art', 'Music', 'Linguistics']
+DISCIPLINES = [
+    "Mathematics", "Physics", "Chemistry", "Biology", "Computer Science",
+    "History", "Literature", "Psychology", "Economics", "Engineering",
+    "Medicine", "Philosophy", "Geography", "Sociology", "Political Science",
+    "Art", "Music", "Linguistics"
+]
 
 def embedding_encode(text):
     return embedding_model.encode(text, normalize_embeddings=True)
@@ -57,14 +52,31 @@ def init_db():
     '''
 
     cursor.execute(CREATE_CONCEPTS_TABLE)
-    discipline_embeddings = embedding_encode(disciplines)
+    discipline_embeddings = embedding_encode(DISCIPLINES)
+
+    CREATE_EXPLANATIONS_TABLE = '''
+        CREATE TABLE IF NOT EXISTS explanations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL,
+        selected_text TEXT NOT NULL,
+        heading TEXT,
+        context TEXT,
+        explanation TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        examples_json TEXT,
+        related_concepts_json TEXT,
+        concept_id TEXT DEFAULT NULL,
+        UNIQUE(url, selected_text)
+    );
+    '''
+    CREATE_EXPLANATIONS_INDEX = 'CREATE INDEX IF NOT EXISTS idx_explanations_url ON explanations(url)'
     
     CREATE_DISCIPLINE_STMT = '''
     INSERT OR IGNORE into concepts (id, name, subject, first_seen, last_seen, embedding) 
     values (?, ?, ?, ?, ?, ?)
     '''
-    for i in range(len(disciplines)):
-        discipline = disciplines[i]
+    for i in range(len(DISCIPLINES)):
+        discipline = DISCIPLINES[i]
         discipline_hash = hashlib.sha256(discipline.lower().strip().encode()).hexdigest()
         time = datetime.utcnow().isoformat()
 
@@ -140,6 +152,8 @@ def init_db():
     cursor.execute(CREATE_QUIZ_RESULTS_TABLE)
     cursor.execute(CREATE_RELATIONSHIPS_TABLE)
     cursor.execute(CREATE_STUDY_SESSIONS_TABLE)
+    cursor.execute(CREATE_EXPLANATIONS_TABLE)
+    cursor.execute(CREATE_EXPLANATIONS_INDEX)
     conn.commit()
     conn.close()
 
@@ -147,7 +161,7 @@ def init_db():
 
 def fetch_all_concepts(cursor):
     return cursor.execute(
-        '''SELECT id, parentid, name, subject, mastery_score, times_encountered, status, sources from
+        '''SELECT id, parentid, name, subject, mastery_score, times_encountered, last_seen, status, sources from
             concepts'''
     ).fetchall()
 
@@ -159,39 +173,56 @@ def fetch_analyses(urls, cursor):
         '''
     , urls).fetchall()
 
+def tree_to_string(tree):
+    def format_node(node, prefix="", is_last=True):
+        connector = "└── " if is_last else "├── "
+        line = prefix + connector + node['name'] + "\n" if prefix else node['name'] + "\n"
+        child_prefix = prefix + ("    " if is_last else "│   ")
+        children = node['children']
+        for i, child in enumerate(children):
+            line += format_node(child, child_prefix, i == len(children) - 1)
+        return line
+
+    result = ""
+    roots = list(tree.values())
+    for i, parent in enumerate(roots):
+        result += format_node(parent)
+    return result
+
 def build_concept_tree(cursor):
     knowledge = fetch_all_concepts(cursor)
 
-    node_map = {concept['id']: {'parentid': concept['parentid'], 
-                       'subject': concept['subject'], 'name': concept['name'], 'sources': concept['sources'], 'children': []} for concept in knowledge}
-    
+    node_map = {concept['id']: {
+        'id': concept['id'],
+        'parentid': concept['parentid'],
+        'subject': concept['subject'],
+        'name': concept['name'],
+        'sources': concept['sources'],
+        'mastery_score': concept['mastery_score'],
+        'times_encountered': concept['times_encountered'],
+        'last_seen': concept['last_seen'],
+        'status': concept['status'],
+        'children': []
+    } for concept in knowledge}
+
     for concept in knowledge:
         if concept['parentid'] is None:
             continue
-
         if concept['parentid'] in node_map:
             node_map[concept['parentid']]['children'].append(node_map[concept['id']])
-    
-    node_map = {k: v for k,v in node_map.items() if v['parentid'] is None}
+
+    node_map = {k: v for k, v in node_map.items() if v['parentid'] is None}
     return node_map
-
-def tree_to_string(tree):
-    def format_node(node, depth):
-        return " " * depth + node['name'] + "\n" + "".join([format_node(child_node, depth + 1) for child_node in node['children']]) 
-
-    result = ""
-    for parent in tree.values():
-        result += format_node(parent, 0)
-
-    return result
-
 
 def upsert_concept(name, subject, parent, url, cursor, embedding, all_concepts, threshold=0.7):
     conceptHash = hashlib.sha256(name.lower().strip().encode()).hexdigest()
 
     time = datetime.utcnow().isoformat()
     similarConcept = find_similar_concept(embedding, all_concepts)
-
+    if similarConcept:
+        print(f"[dedup] '{name}' best match: '{similarConcept[3]}' similarConcept: {similarConcept[1]:.3f}")
+    else:
+        print(f"[dedup] '{name}' no match found")
     operationPerformed = ""
 
     if similarConcept is not None:
@@ -233,6 +264,18 @@ def upsert_analysis(url, topic, summary, flashcards, key_concepts, cursor):
         INSERT OR REPLACE INTO page_analyses (url, topic, summary, flashcards, key_concepts, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)               
     ''', (url, topic, summary, json.dumps(flashcards), json.dumps(key_concepts), now, now))
 
+def fetch_enrichment(url, selected_text, cursor):
+    return cursor.execute(
+        "SELECT examples_json, related_concepts_json FROM explanations WHERE url = ? AND selected_text = ?",
+        (url, selected_text)
+    ).fetchone()
+
+def save_enrichment(url, selected_text, examples, related_concepts, cursor):
+    UPDATE_EXPLANATIONS_WITH_ENRICHMENT = """
+        UPDATE explanations SET examples_json = ?, related_concepts_json = ?
+        WHERE url = ? AND selected_text = ?
+    """
+    cursor.execute(UPDATE_EXPLANATIONS_WITH_ENRICHMENT, (json.dumps(examples), json.dumps(related_concepts), url, selected_text))
 
 def find_similar_concept(concept_embedding, all_concepts):
     similarities_results = []
@@ -244,3 +287,44 @@ def find_similar_concept(concept_embedding, all_concepts):
         return None
 
     return max(similarities_results, key=lambda x: x[1])
+
+def save_explanation(url, selected_text, heading, context, explanation, concept_id, cursor):
+    cursor.execute("""
+        INSERT INTO explanations (url, selected_text, heading, context, explanation, concept_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(url, selected_text) DO UPDATE SET
+            heading = excluded.heading,
+            context = excluded.context,
+            explanation = excluded.explanation,
+            created_at = CURRENT_TIMESTAMP
+    """, (url, selected_text, heading, context, explanation, concept_id))
+
+def fetch_explanations_by_concept(concept_id, cursor):
+    return cursor.execute(
+        "SELECT id, selected_text, heading, context, explanation, created_at FROM explanations WHERE concept_id = ? ORDER BY created_at DESC",
+        (concept_id, )
+    ).fetchall()
+
+def fetch_explanations_by_url(urls, cursor):
+    return cursor.execute(
+        "SELECT id, selected_text, heading, context, explanation, created_at FROM explanations WHERE url IN ({}) ORDER BY created_at DESC".format(','.join('?' * len(urls))),
+        urls
+    ).fetchall()
+
+def find_explored_concept(topic, subject, cursor):
+    print(subject)
+    if subject:
+        concepts = cursor.execute(
+            "SELECT id, name, embedding FROM concepts WHERE subject = ?",
+            (subject,)
+        ).fetchall()
+    else:
+        concepts = cursor.execute(
+            "SELECT id, name, embedding FROM concepts"
+        ).fetchall()
+
+    topic_embedding = embedding_encode(topic)
+    matched_concept = find_similar_concept(topic_embedding, concepts)
+    if matched_concept and matched_concept[1] >= 0.6:
+        return matched_concept[0]
+    return None
